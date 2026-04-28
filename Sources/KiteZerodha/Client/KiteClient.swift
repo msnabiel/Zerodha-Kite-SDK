@@ -1,9 +1,56 @@
 import Foundation
 import CryptoKit
 
-public enum KiteError: Error { case missingAccessToken, invalidURL, apiError(String), decodingError }
-private struct KiteEnvelope<T: Decodable>: Decodable { let status: String; let data: T?; let message: String? }
-private struct KiteHistoricalEnvelope: Decodable { let status: String; let data: KiteHistoricalData?; let message: String? }
+public enum KiteError: Error, Sendable {
+    case missingAccessToken
+    case invalidURL
+    case decodingError
+    case tokenException(String)
+    case userException(String)
+    case orderException(String)
+    case inputException(String)
+    case marginException(String)
+    case holdingException(String)
+    case networkException(String)
+    case dataException(String)
+    case generalException(String)
+    case unknownError(String)
+
+    public init(errorType: String?, message: String) {
+        switch errorType {
+        case "TokenException": self = .tokenException(message)
+        case "UserException": self = .userException(message)
+        case "OrderException": self = .orderException(message)
+        case "InputException": self = .inputException(message)
+        case "MarginException": self = .marginException(message)
+        case "HoldingException": self = .holdingException(message)
+        case "NetworkException": self = .networkException(message)
+        case "DataException": self = .dataException(message)
+        case "GeneralException": self = .generalException(message)
+        default: self = .unknownError(message)
+        }
+    }
+}
+private struct KiteEnvelope<T: Decodable>: Decodable {
+    let status: String
+    let data: T?
+    let message: String?
+    let errorType: String?
+    enum CodingKeys: String, CodingKey {
+        case status, data, message
+        case errorType = "error_type"
+    }
+}
+private struct KiteHistoricalEnvelope: Decodable {
+    let status: String
+    let data: KiteHistoricalData?
+    let message: String?
+    let errorType: String?
+    enum CodingKeys: String, CodingKey {
+        case status, data, message
+        case errorType = "error_type"
+    }
+}
 private struct KiteHistoricalData: Decodable { let candles: [[AnyCodable]] }
 
 public final class KiteClient: @unchecked Sendable {
@@ -59,8 +106,41 @@ public final class KiteClient: @unchecked Sendable {
     public func orderTrades(orderID: String) async throws -> [KiteTrade] { try await request(path: "/orders/\(orderID)/trades", method: "GET") }
     public func positions() async throws -> [String: [KitePosition]] { try await request(path: "/portfolio/positions", method: "GET") }
     public func holdings() async throws -> [KiteHolding] { try await request(path: "/portfolio/holdings", method: "GET") }
+    public func holdingsAuctions() async throws -> [KiteHolding] { try await request(path: "/portfolio/holdings/auctions", method: "GET") }
+
+    public func convertPosition(tradingsymbol: String, exchange: String, transactionType: String, positionType: String, quantity: Int, oldProduct: String, newProduct: String) async throws -> Bool {
+        let _: [String: Bool] = try await request(path: "/portfolio/positions", method: "PUT", form: [
+            "tradingsymbol": tradingsymbol,
+            "exchange": exchange,
+            "transaction_type": transactionType,
+            "position_type": positionType,
+            "quantity": String(quantity),
+            "old_product": oldProduct,
+            "new_product": newProduct
+        ])
+        return true
+    }
+
+    public struct HoldingsAuthorisationRequest: Sendable {
+        public let isin: String?
+        public let quantity: Int?
+        public init(isin: String? = nil, quantity: Int? = nil) {
+            self.isin = isin; self.quantity = quantity
+        }
+    }
+
+    public func authoriseHoldings(_ requests: [HoldingsAuthorisationRequest]) async throws -> String {
+        var form: [String: String] = [:]
+        for (idx, req) in requests.enumerated() {
+            if let isin = req.isin { form["isin[\(idx)]"] = isin }
+            if let quantity = req.quantity { form["quantity[\(idx)]"] = String(quantity) }
+        }
+        let result: [String: String] = try await request(path: "/portfolio/holdings/authorise", method: "POST", form: form)
+        return result["request_id"] ?? ""
+    }
     public func profile() async throws -> [String: String] { try await request(path: "/user/profile", method: "GET") }
     public func margins() async throws -> [String: [String: Double]] { try await request(path: "/user/margins", method: "GET") }
+    public func marginsForSegment(_ segment: String) async throws -> [String: Double] { try await request(path: "/user/margins/\(segment)", method: "GET") }
     public func instruments(exchange: String? = nil) async throws -> String { try await requestRaw(path: exchange.map { "/instruments/\($0)" } ?? "/instruments", method: "GET") }
 
     public func ltp(i: [String]) async throws -> [String: KiteLTPQuote] { try await request(path: "/quote/ltp", method: "GET", query: i.map { URLQueryItem(name: "i", value: $0) }) }
@@ -109,37 +189,48 @@ public final class KiteClient: @unchecked Sendable {
         req.setValue("token \(apiKey):\(token)", forHTTPHeaderField: "Authorization")
         let (d, _) = try await session.data(for: req)
         let env = try JSONDecoder().decode(KiteHistoricalEnvelope.self, from: d)
-        guard env.status == "success", let raw = env.data?.candles else { throw KiteError.apiError(env.message ?? "unknown") }
+        guard env.status == "success", let raw = env.data?.candles else {
+            throw KiteError(errorType: env.errorType, message: env.message ?? "unknown")
+        }
         return raw.compactMap(Self.decodeCandle)
     }
 
     public func placeOrder(_ req: PlaceOrderRequest) async throws -> String {
-        let data: KiteOrder = try await request(path: "/orders/\(req.variety)", method: "POST", form: [
+        var form: [String: String] = [
             "exchange": req.exchange,
             "tradingsymbol": req.tradingsymbol,
             "transaction_type": req.transactionType,
             "quantity": String(req.quantity),
             "product": req.product,
-            "order_type": req.orderType,
-            "price": req.price.map { String($0) } ?? "",
-            "trigger_price": req.triggerPrice.map { String($0) } ?? "",
-            "validity": req.validity ?? "",
-            "tag": req.tag ?? "",
-            "disclosed_quantity": req.disclosedQuantity.map { String($0) } ?? "",
-            "market_protection": req.marketProtection.map { String($0) } ?? "",
-            "autoslice": req.autoslice.map { $0 ? "true" : "false" } ?? "",
-        ].filter { !$0.value.isEmpty })
+            "order_type": req.orderType
+        ]
+        if let price = req.price { form["price"] = String(price) }
+        if let triggerPrice = req.triggerPrice { form["trigger_price"] = String(triggerPrice) }
+        if let validity = req.validity { form["validity"] = validity }
+        if let validityTTL = req.validityTTL { form["validity_ttl"] = String(validityTTL) }
+        if let tag = req.tag { form["tag"] = tag }
+        if let disclosedQuantity = req.disclosedQuantity { form["disclosed_quantity"] = String(disclosedQuantity) }
+        if let marketProtection = req.marketProtection { form["market_protection"] = String(marketProtection) }
+        if let icebergLegs = req.icebergLegs { form["iceberg_legs"] = String(icebergLegs) }
+        if let icebergQuantity = req.icebergQuantity { form["iceberg_quantity"] = String(icebergQuantity) }
+        if let auctionNumber = req.auctionNumber { form["auction_number"] = String(auctionNumber) }
+        if let autoslice = req.autoslice { form["autoslice"] = autoslice ? "true" : "false" }
+
+        let data: KiteOrder = try await request(path: "/orders/\(req.variety)", method: "POST", form: form)
         return data.orderID
     }
 
     public func modifyOrder(_ req: ModifyOrderRequest) async throws -> String {
-        let data: KiteOrder = try await request(path: "/orders/\(req.variety)/\(req.orderID)", method: "PUT", form: [
-            "quantity": req.quantity.map { String($0) } ?? "",
-            "price": req.price.map { String($0) } ?? "",
-            "trigger_price": req.triggerPrice.map { String($0) } ?? "",
-            "validity": req.validity ?? "",
-            "disclosed_quantity": req.disclosedQuantity.map { String($0) } ?? "",
-        ].filter { !$0.value.isEmpty })
+        var form: [String: String] = [:]
+        if let orderType = req.orderType { form["order_type"] = orderType }
+        if let quantity = req.quantity { form["quantity"] = String(quantity) }
+        if let price = req.price { form["price"] = String(price) }
+        if let triggerPrice = req.triggerPrice { form["trigger_price"] = String(triggerPrice) }
+        if let validity = req.validity { form["validity"] = validity }
+        if let disclosedQuantity = req.disclosedQuantity { form["disclosed_quantity"] = String(disclosedQuantity) }
+        if let parentOrderID = req.parentOrderID { form["parent_order_id"] = parentOrderID }
+
+        let data: KiteOrder = try await request(path: "/orders/\(req.variety)/\(req.orderID)", method: "PUT", form: form)
         return data.orderID
     }
 
@@ -174,7 +265,9 @@ public final class KiteClient: @unchecked Sendable {
         }
         let (d, _) = try await session.data(for: req)
         let env = try JSONDecoder().decode(KiteEnvelope<T>.self, from: d)
-        guard env.status == "success", let data = env.data else { throw KiteError.apiError(env.message ?? "unknown") }
+        guard env.status == "success", let data = env.data else {
+            throw KiteError(errorType: env.errorType, message: env.message ?? "unknown")
+        }
         return data
     }
 
@@ -191,7 +284,9 @@ public final class KiteClient: @unchecked Sendable {
 
         let (d, _) = try await session.data(for: req)
         let env = try JSONDecoder().decode(KiteEnvelope<T>.self, from: d)
-        guard env.status == "success", let data = env.data else { throw KiteError.apiError(env.message ?? "unknown") }
+        guard env.status == "success", let data = env.data else {
+            throw KiteError(errorType: env.errorType, message: env.message ?? "unknown")
+        }
         return data
     }
 

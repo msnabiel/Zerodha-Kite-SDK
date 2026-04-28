@@ -67,6 +67,38 @@ public final class KiteClient: @unchecked Sendable {
     public func quote(i: [String]) async throws -> [String: KiteFullQuote] { try await request(path: "/quote", method: "GET", query: i.map { URLQueryItem(name: "i", value: $0) }) }
     public func ohlc(i: [String]) async throws -> [String: KiteOHLCQuote] { try await request(path: "/quote/ohlc", method: "GET", query: i.map { URLQueryItem(name: "i", value: $0) }) }
 
+    // Alerts (form-encoded).
+    public func alerts() async throws -> [KiteAlert] { try await request(path: "/alerts", method: "GET") }
+    public func alert(uuid: String) async throws -> KiteAlert { try await request(path: "/alerts/\(uuid)", method: "GET") }
+    public func createAlert(_ req: KiteAlertCreateRequest) async throws -> KiteAlert { try await request(path: "/alerts", method: "POST", form: req.fields) }
+    public func modifyAlert(uuid: String, _ req: KiteAlertModifyRequest) async throws -> KiteAlert { try await request(path: "/alerts/\(uuid)", method: "PUT", form: req.fields) }
+    public func deleteAlert(uuid: String) async throws -> [String: String] { try await request(path: "/alerts", method: "DELETE", query: [URLQueryItem(name: "uuid", value: uuid)]) }
+    public func alertHistory(uuid: String) async throws -> [KiteAlertHistoryEvent] { try await request(path: "/alerts/\(uuid)/history", method: "GET") }
+
+    // Mutual funds.
+    public func mfOrders() async throws -> [KiteMFOrder] { try await request(path: "/mf/orders", method: "GET") }
+    public func mfOrder(orderID: String) async throws -> KiteMFOrder { try await request(path: "/mf/orders/\(orderID)", method: "GET") }
+    public func mfSIPs() async throws -> [KiteMFSIP] { try await request(path: "/mf/sips", method: "GET") }
+    public func mfHoldings() async throws -> [KiteMFHolding] { try await request(path: "/mf/holdings", method: "GET") }
+    public func mfInstruments() async throws -> String { try await requestRaw(path: "/mf/instruments", method: "GET") }
+
+    // Margin calculation and charges (JSON POST).
+    public func marginsOrders(_ orders: [KiteMarginOrderRequest], mode: String? = nil) async throws -> [KiteMarginResult] {
+        var q: [URLQueryItem] = []
+        if let mode { q.append(.init(name: "mode", value: mode)) }
+        return try await requestJSON(path: "/margins/orders", method: "POST", body: orders, query: q)
+    }
+
+    public func marginsBasket(_ orders: [KiteMarginOrderRequest], mode: String? = nil) async throws -> [KiteMarginResult] {
+        var q: [URLQueryItem] = []
+        if let mode { q.append(.init(name: "mode", value: mode)) }
+        return try await requestJSON(path: "/margins/basket", method: "POST", body: orders, query: q)
+    }
+
+    public func chargesOrders(_ orders: [KiteChargesOrderRequest]) async throws -> [KiteMarginResult] {
+        try await requestJSON(path: "/charges/orders", method: "POST", body: orders)
+    }
+
     public func historical(instrumentToken: Int, interval: String, from: String, to: String, continuous: Int = 0, oi: Int = 0) async throws -> [KiteCandle] {
         var comps = URLComponents(url: apiRoot.appendingPathComponent("/instruments/historical/\(instrumentToken)/\(interval)"), resolvingAgainstBaseURL: false)!
         comps.queryItems = [.init(name: "from", value: from), .init(name: "to", value: to), .init(name: "continuous", value: String(continuous)), .init(name: "oi", value: String(oi))]
@@ -140,6 +172,23 @@ public final class KiteClient: @unchecked Sendable {
             req.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
             req.httpBody = form.map { "\($0.key.urlQueryEscaped)=\($0.value.urlQueryEscaped)" }.joined(separator: "&").data(using: .utf8)
         }
+        let (d, _) = try await session.data(for: req)
+        let env = try JSONDecoder().decode(KiteEnvelope<T>.self, from: d)
+        guard env.status == "success", let data = env.data else { throw KiteError.apiError(env.message ?? "unknown") }
+        return data
+    }
+
+    private func requestJSON<T: Decodable, Body: Encodable>(path: String, method: String, body: Body, query: [URLQueryItem] = []) async throws -> T {
+        var comps = URLComponents(url: apiRoot.appendingPathComponent(path), resolvingAgainstBaseURL: false)!
+        comps.queryItems = query.isEmpty ? nil : query
+        var req = URLRequest(url: comps.url!)
+        req.httpMethod = method
+        req.setValue(KiteZerodha.apiVersion, forHTTPHeaderField: "X-Kite-Version")
+        guard let token = accessToken else { throw KiteError.missingAccessToken }
+        req.setValue("token \(apiKey):\(token)", forHTTPHeaderField: "Authorization")
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try JSONEncoder().encode(body)
+
         let (d, _) = try await session.data(for: req)
         let env = try JSONDecoder().decode(KiteEnvelope<T>.self, from: d)
         guard env.status == "success", let data = env.data else { throw KiteError.apiError(env.message ?? "unknown") }

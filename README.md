@@ -63,5 +63,9 @@ print(message)
 - Main docs: https://kite.trade/docs/connect/v3/
 - Orders: https://kite.trade/docs/connect/v3/orders/
 - GTT: https://kite.trade/docs/connect/v3/gtt/
+- Alerts: https://kite.trade/docs/connect/v3/alerts/
+- Mutual funds: https://kite.trade/docs/connect/v3/mutual-funds/
+- Margin calculation: https://kite.trade/docs/connect/v3/margins/
+- Postbacks/WebHooks: https://kite.trade/docs/connect/v3/postbacks/
 - WebSocket: https://kite.trade/docs/connect/v3/websocket/
 - User/session: https://kite.trade/docs/connect/v3/user/

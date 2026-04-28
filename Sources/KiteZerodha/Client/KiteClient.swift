@@ -3,10 +3,13 @@ import CryptoKit
 
 public enum KiteError: Error { case missingAccessToken, invalidURL, apiError(String), decodingError }
 private struct KiteEnvelope<T: Decodable>: Decodable { let status: String; let data: T?; let message: String? }
+private struct KiteHistoricalEnvelope: Decodable { let status: String; let data: KiteHistoricalData?; let message: String? }
+private struct KiteHistoricalData: Decodable { let candles: [[AnyCodable]] }
 
 public final class KiteClient: @unchecked Sendable {
     public let apiKey: String
     public private(set) var accessToken: String?
+    public private(set) var refreshToken: String?
     private let session: URLSession
     private let apiRoot = KiteZerodha.apiRoot
     private let loginRoot = KiteZerodha.loginRoot
@@ -27,7 +30,27 @@ public final class KiteClient: @unchecked Sendable {
         let checksum = Self.sha256Hex(apiKey + requestToken + apiSecret)
         let s: KiteSession = try await request(path: "/session/token", method: "POST", form: ["api_key": apiKey, "request_token": requestToken, "checksum": checksum], requiresAuth: false)
         accessToken = s.accessToken
+        refreshToken = s.refreshToken
         return s
+    }
+
+    public func renewAccessToken(refreshToken: String, apiSecret: String) async throws -> KiteSession {
+        let checksum = Self.sha256Hex(apiKey + refreshToken + apiSecret)
+        let s: KiteSession = try await request(path: "/session/refresh_token", method: "POST", form: ["api_key": apiKey, "refresh_token": refreshToken, "checksum": checksum], requiresAuth: false)
+        accessToken = s.accessToken
+        self.refreshToken = s.refreshToken
+        return s
+    }
+
+    public func invalidateAccessToken() async throws {
+        guard let token = accessToken else { throw KiteError.missingAccessToken }
+        let _: [String: String] = try await request(path: "/session/token", method: "DELETE", form: ["api_key": apiKey, "access_token": token], requiresAuth: false)
+        accessToken = nil
+    }
+
+    public func invalidateRefreshToken(_ refreshToken: String) async throws {
+        let _: [String: String] = try await request(path: "/session/refresh_token", method: "DELETE", form: ["api_key": apiKey, "refresh_token": refreshToken], requiresAuth: false)
+        self.refreshToken = nil
     }
 
     public func orders() async throws -> [KiteOrder] { try await request(path: "/orders", method: "GET") }
@@ -39,16 +62,23 @@ public final class KiteClient: @unchecked Sendable {
     public func profile() async throws -> [String: String] { try await request(path: "/user/profile", method: "GET") }
     public func margins() async throws -> [String: [String: Double]] { try await request(path: "/user/margins", method: "GET") }
     public func instruments(exchange: String? = nil) async throws -> String { try await requestRaw(path: exchange.map { "/instruments/\($0)" } ?? "/instruments", method: "GET") }
+
     public func ltp(i: [String]) async throws -> [String: KiteLTPQuote] { try await request(path: "/quote/ltp", method: "GET", query: i.map { URLQueryItem(name: "i", value: $0) }) }
     public func quote(i: [String]) async throws -> [String: KiteFullQuote] { try await request(path: "/quote", method: "GET", query: i.map { URLQueryItem(name: "i", value: $0) }) }
     public func ohlc(i: [String]) async throws -> [String: KiteOHLCQuote] { try await request(path: "/quote/ohlc", method: "GET", query: i.map { URLQueryItem(name: "i", value: $0) }) }
-    public func historical(instrumentToken: Int, interval: String, from: String, to: String, continuous: Int = 0, oi: Int = 0) async throws -> [String: [[AnyCodable]]] {
-        try await request(path: "/instruments/historical/\(instrumentToken)/\(interval)", method: "GET", query: [
-            .init(name: "from", value: from),
-            .init(name: "to", value: to),
-            .init(name: "continuous", value: String(continuous)),
-            .init(name: "oi", value: String(oi)),
-        ])
+
+    public func historical(instrumentToken: Int, interval: String, from: String, to: String, continuous: Int = 0, oi: Int = 0) async throws -> [KiteCandle] {
+        var comps = URLComponents(url: apiRoot.appendingPathComponent("/instruments/historical/\(instrumentToken)/\(interval)"), resolvingAgainstBaseURL: false)!
+        comps.queryItems = [.init(name: "from", value: from), .init(name: "to", value: to), .init(name: "continuous", value: String(continuous)), .init(name: "oi", value: String(oi))]
+        var req = URLRequest(url: comps.url!)
+        req.httpMethod = "GET"
+        req.setValue(KiteZerodha.apiVersion, forHTTPHeaderField: "X-Kite-Version")
+        guard let token = accessToken else { throw KiteError.missingAccessToken }
+        req.setValue("token \(apiKey):\(token)", forHTTPHeaderField: "Authorization")
+        let (d, _) = try await session.data(for: req)
+        let env = try JSONDecoder().decode(KiteHistoricalEnvelope.self, from: d)
+        guard env.status == "success", let raw = env.data?.candles else { throw KiteError.apiError(env.message ?? "unknown") }
+        return raw.compactMap(Self.decodeCandle)
     }
 
     public func placeOrder(_ req: PlaceOrderRequest) async throws -> String {
@@ -63,6 +93,9 @@ public final class KiteClient: @unchecked Sendable {
             "trigger_price": req.triggerPrice.map { String($0) } ?? "",
             "validity": req.validity ?? "",
             "tag": req.tag ?? "",
+            "disclosed_quantity": req.disclosedQuantity.map { String($0) } ?? "",
+            "market_protection": req.marketProtection.map { String($0) } ?? "",
+            "autoslice": req.autoslice.map { $0 ? "true" : "false" } ?? "",
         ].filter { !$0.value.isEmpty })
         return data.orderID
     }
@@ -73,6 +106,7 @@ public final class KiteClient: @unchecked Sendable {
             "price": req.price.map { String($0) } ?? "",
             "trigger_price": req.triggerPrice.map { String($0) } ?? "",
             "validity": req.validity ?? "",
+            "disclosed_quantity": req.disclosedQuantity.map { String($0) } ?? "",
         ].filter { !$0.value.isEmpty })
         return data.orderID
     }
@@ -127,7 +161,20 @@ public final class KiteClient: @unchecked Sendable {
         return text
     }
 
-    public static func sha256Hex(_ value: String) -> String {
-        SHA256.hash(data: Data(value.utf8)).map { String(format: "%02x", $0) }.joined()
+    private static func decodeCandle(_ row: [AnyCodable]) -> KiteCandle? {
+        guard row.count >= 6,
+              case .string(let ts) = row[0],
+              let o = toDouble(row[1]), let h = toDouble(row[2]), let l = toDouble(row[3]), let c = toDouble(row[4]), let v = toInt(row[5]) else { return nil }
+        let oi: Int? = row.count > 6 ? toInt(row[6]) : nil
+        return .init(timestamp: ts, open: o, high: h, low: l, close: c, volume: v, oi: oi)
     }
+
+    private static func toDouble(_ a: AnyCodable) -> Double? {
+        switch a { case .double(let v): return v; case .int(let v): return Double(v); case .string(let v): return Double(v); default: return nil }
+    }
+    private static func toInt(_ a: AnyCodable) -> Int? {
+        switch a { case .int(let v): return v; case .double(let v): return Int(v); case .string(let v): return Int(v); default: return nil }
+    }
+
+    public static func sha256Hex(_ value: String) -> String { SHA256.hash(data: Data(value.utf8)).map { String(format: "%02x", $0) }.joined() }
 }

@@ -31,11 +31,25 @@ public final class KiteClient: @unchecked Sendable {
     }
 
     public func orders() async throws -> [KiteOrder] { try await request(path: "/orders", method: "GET") }
+    public func orderHistory(orderID: String) async throws -> [KiteOrder] { try await request(path: "/orders/\(orderID)", method: "GET") }
+    public func trades() async throws -> [KiteTrade] { try await request(path: "/trades", method: "GET") }
+    public func orderTrades(orderID: String) async throws -> [KiteTrade] { try await request(path: "/orders/\(orderID)/trades", method: "GET") }
     public func positions() async throws -> [String: [KitePosition]] { try await request(path: "/portfolio/positions", method: "GET") }
     public func holdings() async throws -> [KiteHolding] { try await request(path: "/portfolio/holdings", method: "GET") }
-    public func ltp(i: [String]) async throws -> [String: [String: Double]] { try await request(path: "/quote/ltp", method: "GET", query: [URLQueryItem(name: "i", value: i.joined(separator: ","))]) }
-    public func quote(i: [String]) async throws -> [String: [String: Double]] { try await request(path: "/quote", method: "GET", query: [URLQueryItem(name: "i", value: i.joined(separator: ","))]) }
-    public func ohlc(i: [String]) async throws -> [String: [String: Double]] { try await request(path: "/quote/ohlc", method: "GET", query: [URLQueryItem(name: "i", value: i.joined(separator: ","))]) }
+    public func profile() async throws -> [String: String] { try await request(path: "/user/profile", method: "GET") }
+    public func margins() async throws -> [String: [String: Double]] { try await request(path: "/user/margins", method: "GET") }
+    public func instruments(exchange: String? = nil) async throws -> String { try await requestRaw(path: exchange.map { "/instruments/\($0)" } ?? "/instruments", method: "GET") }
+    public func ltp(i: [String]) async throws -> [String: KiteLTPQuote] { try await request(path: "/quote/ltp", method: "GET", query: i.map { URLQueryItem(name: "i", value: $0) }) }
+    public func quote(i: [String]) async throws -> [String: KiteFullQuote] { try await request(path: "/quote", method: "GET", query: i.map { URLQueryItem(name: "i", value: $0) }) }
+    public func ohlc(i: [String]) async throws -> [String: KiteOHLCQuote] { try await request(path: "/quote/ohlc", method: "GET", query: i.map { URLQueryItem(name: "i", value: $0) }) }
+    public func historical(instrumentToken: Int, interval: String, from: String, to: String, continuous: Int = 0, oi: Int = 0) async throws -> [String: [[AnyCodable]]] {
+        try await request(path: "/instruments/historical/\(instrumentToken)/\(interval)", method: "GET", query: [
+            .init(name: "from", value: from),
+            .init(name: "to", value: to),
+            .init(name: "continuous", value: String(continuous)),
+            .init(name: "oi", value: String(oi)),
+        ])
+    }
 
     public func placeOrder(_ req: PlaceOrderRequest) async throws -> String {
         let data: KiteOrder = try await request(path: "/orders/\(req.variety)", method: "POST", form: [
@@ -96,6 +110,21 @@ public final class KiteClient: @unchecked Sendable {
         let env = try JSONDecoder().decode(KiteEnvelope<T>.self, from: d)
         guard env.status == "success", let data = env.data else { throw KiteError.apiError(env.message ?? "unknown") }
         return data
+    }
+
+    private func requestRaw(path: String, method: String, query: [URLQueryItem] = [], requiresAuth: Bool = true) async throws -> String {
+        var comps = URLComponents(url: apiRoot.appendingPathComponent(path), resolvingAgainstBaseURL: false)!
+        comps.queryItems = query.isEmpty ? nil : query
+        var req = URLRequest(url: comps.url!)
+        req.httpMethod = method
+        req.setValue(KiteZerodha.apiVersion, forHTTPHeaderField: "X-Kite-Version")
+        if requiresAuth {
+            guard let token = accessToken else { throw KiteError.missingAccessToken }
+            req.setValue("token \(apiKey):\(token)", forHTTPHeaderField: "Authorization")
+        }
+        let (d, _) = try await session.data(for: req)
+        guard let text = String(data: d, encoding: .utf8) else { throw KiteError.decodingError }
+        return text
     }
 
     public static func sha256Hex(_ value: String) -> String {

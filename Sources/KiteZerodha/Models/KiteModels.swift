@@ -1,5 +1,32 @@
 import Foundation
 
+public enum AnyCodable: Sendable, Codable {
+    case string(String), int(Int), double(Double), bool(Bool), array([AnyCodable]), object([String: AnyCodable]), null
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.singleValueContainer()
+        if c.decodeNil() { self = .null }
+        else if let v = try? c.decode(Bool.self) { self = .bool(v) }
+        else if let v = try? c.decode(Int.self) { self = .int(v) }
+        else if let v = try? c.decode(Double.self) { self = .double(v) }
+        else if let v = try? c.decode(String.self) { self = .string(v) }
+        else if let v = try? c.decode([AnyCodable].self) { self = .array(v) }
+        else if let v = try? c.decode([String: AnyCodable].self) { self = .object(v) }
+        else { throw DecodingError.typeMismatch(AnyCodable.self, .init(codingPath: decoder.codingPath, debugDescription: "Unsupported type")) }
+    }
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.singleValueContainer()
+        switch self {
+        case .null: try c.encodeNil()
+        case .bool(let v): try c.encode(v)
+        case .int(let v): try c.encode(v)
+        case .double(let v): try c.encode(v)
+        case .string(let v): try c.encode(v)
+        case .array(let v): try c.encode(v)
+        case .object(let v): try c.encode(v)
+        }
+    }
+}
+
 public struct KiteSession: Sendable, Codable {
     public let userID: String?
     public let userName: String?
@@ -26,6 +53,44 @@ public struct KiteSession: Sendable, Codable {
 public struct KiteOrder: Sendable, Codable {
     public let orderID: String
     enum CodingKeys: String, CodingKey { case orderID = "order_id" }
+}
+public struct KiteTrade: Sendable, Codable {
+    public let tradeID: String?
+    public let orderID: String?
+    public let tradingsymbol: String?
+    public let quantity: Int?
+    public let price: Double?
+    enum CodingKeys: String, CodingKey {
+        case tradeID = "trade_id", orderID = "order_id", tradingsymbol, quantity, price
+    }
+}
+
+public struct KiteLTPQuote: Sendable, Codable {
+    public let instrumentToken: UInt32?
+    public let lastPrice: Double?
+    enum CodingKeys: String, CodingKey { case instrumentToken = "instrument_token", lastPrice = "last_price" }
+}
+
+public struct KiteOHLCData: Sendable, Codable {
+    public let open: Double?
+    public let high: Double?
+    public let low: Double?
+    public let close: Double?
+}
+
+public struct KiteOHLCQuote: Sendable, Codable {
+    public let instrumentToken: UInt32?
+    public let lastPrice: Double?
+    public let ohlc: KiteOHLCData?
+    enum CodingKeys: String, CodingKey { case instrumentToken = "instrument_token", lastPrice = "last_price", ohlc }
+}
+
+public struct KiteFullQuote: Sendable, Codable {
+    public let instrumentToken: UInt32?
+    public let lastPrice: Double?
+    public let ohlc: KiteOHLCData?
+    public let volume: Int?
+    enum CodingKeys: String, CodingKey { case instrumentToken = "instrument_token", lastPrice = "last_price", ohlc, volume }
 }
 
 public struct KitePosition: Sendable, Codable { public let tradingsymbol: String? }

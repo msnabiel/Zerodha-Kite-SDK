@@ -1,10 +1,18 @@
 import Foundation
 
-public struct KiteTick: Sendable { public let instrumentToken: Int; public let lastPrice: Double }
+public struct KiteTick: Sendable {
+    public let instrumentToken: Int
+    public let lastPrice: Double
+    public let mode: KiteTicker.Mode
+    public let open: Double?
+    public let high: Double?
+    public let low: Double?
+    public let close: Double?
+}
 public enum KiteTickerMessage: Sendable { case text(String), binary([KiteTick]) }
 
 public final class KiteTicker {
-    public enum Mode: String { case ltp, quote, full }
+    public enum Mode: String, Sendable { case ltp, quote, full }
     private let socket: URLSessionWebSocketTask
 
     public init(apiKey: String, accessToken: String, session: URLSession = .shared, wsRoot: URL = URL(string: "wss://ws.kite.trade")!) {
@@ -22,20 +30,36 @@ public final class KiteTicker {
     public func receive() async throws -> KiteTickerMessage {
         switch try await socket.receive() {
         case .string(let s): return .text(s)
-        case .data(let d): return .binary(Self.parseLTPBinary(d))
+        case .data(let d): return .binary(Self.parseBinary(d))
         @unknown default: return .text("")
         }
     }
 
-    public static func parseLTPBinary(_ data: Data) -> [KiteTick] {
-        guard data.count >= 12 else { return [] }
+    public static func parseBinary(_ data: Data) -> [KiteTick] {
+        guard data.count >= 4 else { return [] }
         let count = Int(data.readUInt16BE(at: 0))
         var out: [KiteTick] = []; var o = 2
         for _ in 0..<count {
-            if o + 10 > data.count { break }
+            if o + 2 > data.count { break }
             let len = Int(data.readUInt16BE(at: o)); o += 2
             if len >= 8, o + len <= data.count {
-                out.append(.init(instrumentToken: Int(data.readInt32BE(at: o)), lastPrice: Double(data.readInt32BE(at: o + 4)) / 100.0))
+                let token = Int(data.readInt32BE(at: o))
+                let ltp = Double(data.readInt32BE(at: o + 4)) / 100.0
+                if len == 8 {
+                    out.append(.init(instrumentToken: token, lastPrice: ltp, mode: .ltp, open: nil, high: nil, low: nil, close: nil))
+                } else if len == 28 || len == 32 {
+                    let high = Double(data.readInt32BE(at: o + 8)) / 100.0
+                    let low = Double(data.readInt32BE(at: o + 12)) / 100.0
+                    let open = Double(data.readInt32BE(at: o + 16)) / 100.0
+                    let close = Double(data.readInt32BE(at: o + 20)) / 100.0
+                    out.append(.init(instrumentToken: token, lastPrice: ltp, mode: .quote, open: open, high: high, low: low, close: close))
+                } else {
+                    let open = len >= 32 ? Double(data.readInt32BE(at: o + 28)) / 100.0 : nil
+                    let high = len >= 36 ? Double(data.readInt32BE(at: o + 32)) / 100.0 : nil
+                    let low = len >= 40 ? Double(data.readInt32BE(at: o + 36)) / 100.0 : nil
+                    let close = len >= 44 ? Double(data.readInt32BE(at: o + 40)) / 100.0 : nil
+                    out.append(.init(instrumentToken: token, lastPrice: ltp, mode: len >= 184 ? .full : .quote, open: open, high: high, low: low, close: close))
+                }
             }
             o += len
         }

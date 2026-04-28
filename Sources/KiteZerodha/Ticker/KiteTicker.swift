@@ -4,6 +4,7 @@ public struct KiteTick: Sendable { public let instrumentToken: Int; public let l
 public enum KiteTickerMessage: Sendable { case text(String), binary([KiteTick]) }
 
 public final class KiteTicker {
+    public enum Mode: String { case ltp, quote, full }
     private let socket: URLSessionWebSocketTask
 
     public init(apiKey: String, accessToken: String, session: URLSession = .shared, wsRoot: URL = URL(string: "wss://ws.kite.trade")!) {
@@ -15,7 +16,8 @@ public final class KiteTicker {
     public func connect() { socket.resume() }
     public func disconnect() { socket.cancel(with: .normalClosure, reason: nil) }
     public func subscribe(tokens: [Int]) async throws { try await send(["a": "subscribe", "v": tokens]) }
-    public func setMode(_ mode: String, tokens: [Int]) async throws { try await send(["a": "mode", "v": [mode, tokens]]) }
+    public func unsubscribe(tokens: [Int]) async throws { try await send(["a": "unsubscribe", "v": tokens]) }
+    public func setMode(_ mode: Mode, tokens: [Int]) async throws { try await send(["a": "mode", "v": [mode.rawValue, tokens]]) }
 
     public func receive() async throws -> KiteTickerMessage {
         switch try await socket.receive() {

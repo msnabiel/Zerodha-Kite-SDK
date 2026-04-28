@@ -33,6 +33,9 @@ public final class KiteClient: @unchecked Sendable {
     public func orders() async throws -> [KiteOrder] { try await request(path: "/orders", method: "GET") }
     public func positions() async throws -> [String: [KitePosition]] { try await request(path: "/portfolio/positions", method: "GET") }
     public func holdings() async throws -> [KiteHolding] { try await request(path: "/portfolio/holdings", method: "GET") }
+    public func ltp(i: [String]) async throws -> [String: [String: Double]] { try await request(path: "/quote/ltp", method: "GET", query: [URLQueryItem(name: "i", value: i.joined(separator: ","))]) }
+    public func quote(i: [String]) async throws -> [String: [String: Double]] { try await request(path: "/quote", method: "GET", query: [URLQueryItem(name: "i", value: i.joined(separator: ","))]) }
+    public func ohlc(i: [String]) async throws -> [String: [String: Double]] { try await request(path: "/quote/ohlc", method: "GET", query: [URLQueryItem(name: "i", value: i.joined(separator: ","))]) }
 
     public func placeOrder(_ req: PlaceOrderRequest) async throws -> String {
         let data: KiteOrder = try await request(path: "/orders/\(req.variety)", method: "POST", form: [
@@ -68,9 +71,17 @@ public final class KiteClient: @unchecked Sendable {
     public func placeGTT(type: String, conditionJSON: String, ordersJSON: String) async throws -> KiteGTTResponse {
         try await request(path: "/gtt/triggers", method: "POST", form: ["type": type, "condition": conditionJSON, "orders": ordersJSON])
     }
+    public func gtts() async throws -> [KiteGTTTrigger] { try await request(path: "/gtt/triggers", method: "GET") }
+    public func gtt(id: Int) async throws -> KiteGTTTrigger { try await request(path: "/gtt/triggers/\(id)", method: "GET") }
+    public func modifyGTT(id: Int, type: String, conditionJSON: String, ordersJSON: String) async throws -> KiteGTTResponse {
+        try await request(path: "/gtt/triggers/\(id)", method: "PUT", form: ["type": type, "condition": conditionJSON, "orders": ordersJSON])
+    }
+    public func deleteGTT(id: Int) async throws -> KiteGTTResponse { try await request(path: "/gtt/triggers/\(id)", method: "DELETE") }
 
-    private func request<T: Decodable>(path: String, method: String, form: [String: String]? = nil, requiresAuth: Bool = true) async throws -> T {
-        var req = URLRequest(url: apiRoot.appendingPathComponent(path))
+    private func request<T: Decodable>(path: String, method: String, form: [String: String]? = nil, requiresAuth: Bool = true, query: [URLQueryItem] = []) async throws -> T {
+        var comps = URLComponents(url: apiRoot.appendingPathComponent(path), resolvingAgainstBaseURL: false)!
+        comps.queryItems = query.isEmpty ? nil : query
+        var req = URLRequest(url: comps.url!)
         req.httpMethod = method
         req.setValue(KiteZerodha.apiVersion, forHTTPHeaderField: "X-Kite-Version")
         if requiresAuth {

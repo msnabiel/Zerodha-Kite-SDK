@@ -57,3 +57,11 @@ print(message)
 - Uses Kite Connect v3 headers and auth format.
 - Binary parser currently decodes LTP-style packets (`instrument_token`, `last_price`).
 - Extend models/decoders if you need full quote/depth packets.
+
+## Official References
+
+- Main docs: https://kite.trade/docs/connect/v3/
+- Orders: https://kite.trade/docs/connect/v3/orders/
+- GTT: https://kite.trade/docs/connect/v3/gtt/
+- WebSocket: https://kite.trade/docs/connect/v3/websocket/
+- User/session: https://kite.trade/docs/connect/v3/user/

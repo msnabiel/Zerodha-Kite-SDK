@@ -34,6 +34,11 @@ public struct KiteGTTResponse: Sendable, Codable {
     public let triggerID: Int
     enum CodingKeys: String, CodingKey { case triggerID = "trigger_id" }
 }
+public struct KiteGTTTrigger: Sendable, Codable {
+    public let id: Int
+    public let type: String?
+    public let status: String?
+}
 
 public struct PlaceOrderRequest: Sendable {
     public let variety, exchange, tradingsymbol, transactionType, product, orderType: String
